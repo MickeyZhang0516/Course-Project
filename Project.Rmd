@@ -1,0 +1,353 @@
+---
+title: "Predicting Behavioral Feedback from Neural Activity Data"
+author: "Mickey Zhang"
+date: '2023-06-12'
+output: html_document
+---
+#### STA 141A Course Project
+#### SID # 917381485
+
+## Abstract
+This study is course project that aimed to construct a predictive model for feedback based on neural activity data obtained by Steinmetz et al. (2019). To build the predictive model, logistic regression is employed, with the feedback as the target variable and the PCA components as predictor variables. The model is trained using the experiment data from 18 sessions of the original study and tested on a data set with 200 trials that separated from session 1 and 18. The performance of the model on the test data set is evaluated to assess its predictive capabilities.
+
+## Section 1: Introduction
+Steinmetz et al. (2019)  conducted a study to explore the spatial distribution of neurons underlying vision, choice, action and behavioral engagement. Researchers recorded neuron activities in 42 brain regions of 10 mices (5 male, 5 female) over 39 session from performing a visual behavioral experiment, where visual stimuli were presented on two screens, one on each side of the mouse randomly. The mice would then decide to turn a wheel left or right based on the stimuli and the feedback would be recorded simultaneously. The neural activities would also recorded during trials and present in form of spike trains, which are time stamps of neuron firing.
+
+As results, Steinmetz et al. found that the neural activity in the mouse brain was distributed across many different brain regions. Some regions were more active when the mice made a decision, while others were more active when the mice received a reward. These results reveal how the brain codes information related to decision-making, action, and reward, and how this information is distributed across different brain regions.
+
+However, the researchers did not came out with an generalized predictive model that could predict feedback based on the neural activity data. Thus, for further researches and replication of the original study, this study would attempt to construct a predictive model that predicts feedback by neural activities using the original data from four mice of 18 session.
+
+## Section 2: Exploratory Data Analysis
+#### A. Exploring the Data Set
+```{r}
+suppressPackageStartupMessages(suppressWarnings(library(tidyverse)))
+suppressWarnings(library(knitr))
+
+session=list()
+name = c()
+date = c()
+trials = c()
+neurons = c()
+nareas = c()
+rate = c()
+for(i in 1:18){
+  session[[i]]=readRDS(paste('./session',i,'.rds',sep=''))
+  name[i]=session[[i]]$mouse_name
+  date[i]=session[[i]]$date_exp
+  trials[i]=length(session[[i]]$feedback_type)
+  neurons[i]=length(session[[i]]$brain_area)
+  nareas[i]=length(unique(session[[i]]$brain_area))
+    options(digits=2)
+  rate[i]=mean(session[[i]]$feedback_type+1)/2
+}
+overview = tibble(1:18, date, name, trials, neurons, nareas, rate)
+colnames(overview) = c('Session', 'Date of Experiment','Mouse Name','Number of Trials', 'Number of Neurons','Number of Brain Areas Involved', 'Success Rate')
+knitr::kable(overview, caption = 'Data Set Overview')
+
+```
+The stimuli (`contrast_left`, `contrast_right`) has 4 different levels: 0, 0.25, 0.5, 1, with 0 indicating the absence of a stimulus.
+
+`feedback_type` with value 1 (success) or -1 (failure), recorded based on turning direction of the wheel and the contrast level:
+
+When left contrast > right contrast, record success (1) if turning the wheel to the right and otherwise failure (-1).
+
+When right contrast > left contrast, record success (1) if turning the wheel to the left and otherwise failure (-1).
+    
+When both left and right contrasts are zero, record success (1) if holding the wheel still and otherwise failure (-1).
+
+When left and right contrasts are equal but non-zero, left or right will be randomly chosen at p = 0.5 as success (1).
+
+`time` are the centers of the time bins for `spks`. There are 40 timestamps for 0.4 seconds, from onset of the stimuli to post-onset, for each trial.
+
+`spks` are numbers of spikes of each neurons in each time bins.
+
+#### B. Exploring the Data Structure. 
+##### Session
+Take trial 1 session 17 as an example.
+```{r}
+i.s= 17
+i.t = 1
+spk.trial = session[[i.s]]$spks[[i.t]]
+feedback = session[[i.s]]$feedback_type[[i.t]]
+area=session[[i.s]]$brain_area
+spk.count=apply(spk.trial,1,sum)
+s17t1 = data.frame(area,spk.count)
+print(data.frame(aggregate(.~area,data=s17t1,FUN=sum),feedback))
+print(data.frame(aggregate(.~area,data=s17t1,FUN=mean),feedback))
+```
+Here, I define neutral activity as the total number of neurons in each brain area as neural activity.
+Run the code across Section 17
+```{r}
+s17 = data.frame()
+for( i.t in 1:length(session[[i.s]]$feedback_type)){
+  spk.trial = session[[i.s]]$spks[[i.t]]
+  feedback = session[[i.s]]$feedback_type[[i.t]]
+  area=session[[i.s]]$brain_area
+  spk.count=apply(spk.trial,1,sum)
+  df = data.frame(area,spk.count)
+  s17 = rbind(s17,data.frame(aggregate(.~area,data=df,FUN=sum),feedback))
+}
+ggplot(s17, aes(spk.count, feedback, colour = area)) + 
+  geom_point()+
+  scale_x_continuous(n.breaks=10)+
+  scale_y_continuous(n.breaks=2)+
+  labs(x = 'Number of Spikes', y ='Feedback',title = 'Total Number of Spikes vs. Feedback') +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+Figure 1. Total Number of Spikes vs. Feedback
+
+According to Figure 1, it is obvious that neurons in "root" area have slightly more spikes when 'Success'(1) than 'Failure'(-1). 
+
+Let's look at the average number of spikes per area per trial to see if there's a pattern.
+```{r}
+s17.avg = data.frame()
+for( i.t in 1:length(session[[i.s]]$feedback_type)){
+  spk.trial = session[[i.s]]$spks[[i.t]]
+  feedback = session[[i.s]]$feedback_type[[i.t]]
+  area=session[[i.s]]$brain_area
+  spk.count=apply(spk.trial,1,sum)
+  df = data.frame(area,spk.count)
+  s17.avg = rbind(s17.avg,data.frame(aggregate(.~area,data=df,FUN=mean),feedback))
+}
+ggplot(s17.avg, aes(spk.count, feedback, colour = area)) + 
+  geom_point()+
+  scale_x_continuous(n.breaks=10)+
+  scale_y_continuous(n.breaks=2)+
+  labs(x = 'Number of Spikes', y ='Feedback',title = 'Average Number of Spikes vs. Feedback') +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+Figure 2. Average Number of Spikes vs. Feedback
+
+According to Figure 2, neurons in "LD" area have slightly more spikes in average when 'Failure'(-1) than 'Success'(1). 
+
+##### Trial
+```{r}
+i.t = 1
+spks = data.frame(session[[i.s]]$spks[[i.t]])
+time.points = session[[i.s]]$time[[i.t]]
+colnames(spks) = time.points
+spks = cbind(area, spks)
+rc = data.frame()
+for ( r in 1:nrow(spks)){
+  for (c in 2:ncol(spks)){
+    if (spks[r,c]>0){
+      time = as.numeric(colnames(spks)[c])
+      info = c(spks[r,1],time,r,spks[r,c])
+      rc = rbind(rc,info)
+    }
+  }
+}
+colnames(rc) = c('area','time','neurons','size')
+options(digits=9)
+rc$time = as.numeric(rc$time)
+ggplot(data = rc, aes(x=as.numeric(time), y =neurons, color = area, size = size))+
+  geom_point()+
+  labs(title = 'Neural Acitivity in Session 17 Trial 1', 
+       subtitle = 'Failure(-1)')+
+  scale_x_continuous(name = 'Time(s)',n.breaks=10)+
+  theme(axis.text.y=element_blank(),  
+        axis.ticks.y=element_blank(),
+        plot.title = element_text(hjust = 0.5))
+
+```
+
+Now, take a look at Trial 2
+```{r}
+i.t = 2
+spks = data.frame(session[[i.s]]$spks[[i.t]])
+time.points = session[[i.s]]$time[[i.t]]
+colnames(spks) = time.points
+spks = cbind(area, spks)
+rc = data.frame()
+for ( r in 1:nrow(spks)){
+  for (c in 2:ncol(spks)){
+    if (spks[r,c]>0){
+      time = as.numeric(colnames(spks)[c])
+      info = c(spks[r,1],time,r,spks[r,c])
+      rc = rbind(rc,info)
+    }
+  }
+}
+colnames(rc) = c('area','time','neurons','size')
+options(digits=9)
+rc$time = as.numeric(rc$time)
+ggplot(data = rc, aes(x=as.numeric(time), y =neurons, color = area, size =size))+
+  geom_point()+
+  labs(title = 'Neural Acitivity in Session 17 Trial 2', 
+       subtitle = 'Success(1)')+
+  scale_x_continuous(name = 'Time(s)',n.breaks=10)+
+  theme(axis.text.y=element_blank(),  
+        axis.ticks.y=element_blank(),
+        plot.title = element_text(hjust = 0.5))
+```
+
+By comparing the two graphs above, we could see that Trial 1 has larger LD spikes and root spikes at a time and trial 2 has lager VPM spikes. This could possibly implied that the success rate might be related to the number and the size of the spikes.
+
+#### C. Homogeneity and Heterogeneity across trials, sessions and mice
+Most heterogeneity in trials are due to the differences in neurons measured in each trials, we can ignore the information about specific neurons by averaging over their activities in the same area. Heterogeneity of mice across the sessions might cause bias in the model. However, to create a more general model that do not favor a specific mice or session, we decided to ignore heterogeneity. In that way, we could also predict outcome for future experiments. Some homogeneity may include the identical groups of neurons activated across session and mice.
+
+## Section 3: Data Integration
+As discussed in the previous sections, we would first calculate the average spikes per brain area for each trial, aggregate them into a cleaned data set and made available for our analysis.
+```{r}
+integrated = list()
+for (i.s in 1:length(session)){
+ s = data.frame()
+ n.trials = length(session[[i.s]]$spks)
+for (i.t in 1:n.trials){
+  spk.trial = session[[i.s]]$spks[[i.t]]
+  feedback = (session[[i.s]]$feedback_type[[i.t]]+1)/2
+  area=session[[i.s]]$brain_area
+  spk.count=apply(spk.trial,1,sum)
+  df = data.frame(area,spk.count)
+  agg = aggregate(.~area,data=df,FUN=mean)
+  s[i.t,1:length(agg$spk.count)] = agg[1:length(agg$spk.count),2]
+  s$feedback[i.t] = feedback
+  colnames(s) =  c(agg[1:length(agg$spk.count),1],'feedback')
+  }  
+integrated[[i.s]] = s
+}
+
+```
+Here, we have an integrated list of data of the average spikes per brain area for each trials and session. Next, we would finalized the data into one data frame with the feedback of each trial.
+```{r}
+final = data.frame()
+i.r = c()
+for (i.s in 1:length(session)){
+  i.r[i.s] = nrow(integrated[[i.s]])
+}
+i.r = c(0,i.r)
+i.i = data.frame()
+for (i.s in 1:length(session)){
+ i.i[i.s,1] = sum(i.r[1:i.s])+1
+ i.i[i.s,2] = sum(i.r[1:i.s])+nrow(integrated[[i.s]])
+}
+c = 1
+for (i.s in 1:length(session)){
+  for ( n.area in 1:length(integrated[[i.s]])){
+    if (colnames(integrated[[i.s]][n.area]) %in% colnames(final)){
+        a = which(colnames(final) == colnames(integrated[[i.s]][n.area]))
+        integrated[[i.s]][[n.area]]
+        final[i.i[i.s,1]:i.i[i.s,2],a]=integrated[[i.s]][[n.area]]
+        } else { 
+          final = final %>% add_column (add_column = NA)
+          colnames(final)[c]= colnames(integrated[[i.s]][n.area])
+          integrated[[i.s]][[n.area]]
+          final[i.i[i.s,1]:i.i[i.s,2],c]=integrated[[i.s]][[n.area]]                      
+          c = c+1
+        }
+  } 
+}
+final[is.na(final)]=0
+final = final %>% relocate(feedback)
+
+```
+
+Now the data is finalized and ready to go with the principal component analysis (PCA).
+
+## Section 4: Predictive Modeling
+In this study, we decided to use principle components analysis(PCA) to build the predictive model since we have too many variables (brain areas) associated with the outcome.
+```{r}
+final.pca = select(final,-c(feedback))
+PCA = prcomp(~., data =final.pca, center = TRUE, scale = TRUE)
+plot(PCA, type = "lines")
+```
+According to the PCA screen plot,  5 components look to be the best.
+
+## Section 5: Predictive Modeling 
+### A. Modeling
+Since our target outcome variable is binary,  we are using logistic regression model.
+```{r}
+suppressPackageStartupMessages(suppressWarnings(library(caret)))
+train = data.frame(final$feedback, PCA$x[,1:5])
+colnames(train)[1] = 'feedback'
+logmodel = glm(feedback ~ ., data = train, family = binomial)
+
+```
+
+### B. Prediction performance on Test
+First, we need to integrate the data the same way as the training data.
+```{r}
+#load test session information
+testsession = list()
+for(i in 1:2){
+  testsession[[i]]=readRDS(paste('./test',i,'.rds',sep=''))
+}
+
+integrated.test = list()
+for (i.s in 1:2){
+ s = data.frame()
+ n.trials = length(testsession[[i.s]]$spks)
+for (i.t in 1:n.trials){
+  spk.trial = testsession[[i.s]]$spks[[i.t]]
+  feedback = (testsession[[i.s]]$feedback_type[[i.t]]+1)/2
+  area=testsession[[i.s]]$brain_area
+  spk.count=apply(spk.trial,1,sum)
+  df = data.frame(area,spk.count)
+  agg = aggregate(.~area,data=df,FUN=mean)
+  s[i.t,1:length(agg$spk.count)] = agg[1:length(agg$spk.count),2]
+  s$feedback[i.t] = feedback
+  colnames(s) =  c(agg[1:length(agg$spk.count),1],'feedback')
+  }  
+integrated.test[[i.s]] = s
+}
+
+final.test = data.frame()
+i.r = c()
+for (i.s in 1:length(testsession)){
+  i.r[i.s] = nrow(integrated.test[[i.s]])
+}
+i.r = c(0,i.r)
+i.i = data.frame()
+for (i.s in 1:length(testsession)){
+ i.i[i.s,1] = sum(i.r[1:i.s])+1
+ i.i[i.s,2] = sum(i.r[1:i.s])+nrow(integrated.test[[i.s]])
+}
+c = 1
+for (i.s in 1:length(testsession)){
+  for ( n.area in 1:length(integrated.test[[i.s]])){
+    if (colnames(integrated.test[[i.s]][n.area]) %in% colnames(final.test)){
+        a = which(colnames(final.test) == colnames(integrated.test[[i.s]][n.area]))
+        integrated.test[[i.s]][[n.area]]
+        final.test[i.i[i.s,1]:i.i[i.s,2],a]=integrated.test[[i.s]][[n.area]]
+        } else { 
+          final.test = final.test %>% add_column (add_column = NA)
+          colnames(final.test)[c]= colnames(integrated.test[[i.s]][n.area])
+          integrated.test[[i.s]][[n.area]]
+          final.test[i.i[i.s,1]:i.i[i.s,2],c]=integrated.test[[i.s]][[n.area]]                      
+          c = c+1
+        }
+  } 
+}
+final.test[is.na(final.test)]=0
+final.test = final.test %>% relocate(feedback)
+final.test.pca = select(final.test,-c(feedback))
+PCA.test = prcomp(~., data =final.test.pca, center = TRUE, scale = TRUE)
+test = data.frame(final.test$feedback, PCA.test$x[,1:5])
+colnames(test)[1] = 'feedback'
+```
+
+Now the test data is ready to be predicted.
+```{r}
+
+predicted = predict(logmodel, newdata = test, type = "response")
+suppressPackageStartupMessages(suppressWarnings(library(pROC)))
+roc = roc(test$feedback, predicted)
+optimalcutoff = coords(roc, "best")
+result = ifelse(predicted>optimalcutoff$threshold,1,0)
+confusion_matrix = table(result, test$feedback)
+confusion_matrix
+accuracy = sum(diag(confusion_matrix))/sum(confusion_matrix)
+sensitivity = confusion_matrix[2,2] / (confusion_matrix[2,2] + confusion_matrix[2,1])
+specificity = confusion_matrix[1,1] / (confusion_matrix[1,1] + confusion_matrix[1,2])
+precision = confusion_matrix[2,2] / (confusion_matrix[2,2] + confusion_matrix[1,2])
+f1 = 2 * (precision * sensitivity) / (precision + sensitivity)
+stat = data.frame(accuracy,sensitivity,specificity,precision,f1)
+stat
+```
+According to the stats, the model has done a good job in general.
+Accuracy measures the overall correctness of the model's predictions. In this case 70.5% of the cases are correctly classified. Sensitivity measures the proportion of true positives out of all the actual positives. The model has done a good job on identify true positive over positive. Similarly, specificity measures the proportion of true negatives out of all actual negative. The model has done a relatively poor job on classifying true negatives. The precision is the proportion of true positive predictions out of all positive. The model also have done a good job on that.
+
+### Discussion
+ Overall, the final predictive model generally have done a descent job on predicting the feedback based on the average spike for each brain area per trial, although it did a relatively bad job on classifiying true negative. As discussed in previous section, some misclassification might resulted from the heterogeneity across session and mice. If we want to improve the performance of the model on this specific test data, we could separate the sessions into groups by mice(i.e. session 1-3 for Cori, 4-7 for Forssmann ) and then train an model specifically for mouse Cori and Lederberg. 
